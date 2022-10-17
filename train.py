@@ -13,7 +13,7 @@ from collections import Counter
 from Mixtures.mixtures import generate_mixture_fold, generate_scaffold_split
 from MultiStageModel.GlobalGlobalEnsemble import GlobalGlobalEnsemble
 from MultiStageModel.GlobalLocalEnsemble import GlobalLocalEnsemble
-from utils import make_equal_sized_bins
+from utils import make_equal_sized_bins, ncs_descriptors
 
 
 ALL_ENDPOINTS = ['Absorption max (nm)', 'Emission max (nm)', 'Lifetime (ns)', 'Quantum yield',
@@ -82,10 +82,21 @@ def main(datafile: str,
     if not all(["fit" in dir(model) and "predict" in dir(model) for model in models]):
         raise ValueError("cannot find fit and predict function for all passed models")
 
+    if dye_desc == "padel":
+        if padel_dye_lookup is None:
+            raise ValueError("Need to pass PaDEL lookup table to use PaDEL dye descriptors. Use padel.py script "
+                             "to generate lookup table for your dataset")
+
+        df_padel = pd.read_csv(padel_dye_lookup)
+        df_padel.drop_duplicates(subset=[dyes_col], inplace=True)
+        df_padel = df_padel[df_padel.columns[2:]].set_index(dyes_col)
+
     if verbose:
         print(f"done in {time.time() - t0} sec")
 
     for endpoint in endpoints:
+        if verbose:
+            print(f"Starting endpoint {endpoint}")
         endpoint_results = {}
         df_endpoint = deepcopy(df[~np.isnan(df[endpoint])])
 
@@ -106,15 +117,7 @@ def main(datafile: str,
             t0 = time.time()
 
         if dye_desc == "padel":
-            if padel_dye_lookup is None:
-                raise ValueError("Need to pass PaDEL lookup table to use PaDEL dye descriptors. Use padel.py script "
-                                 "to generate lookup table for your dataset")
-
-            df_padel = pd.read_csv("/home/james/Projects/DyeModeling/data/dye_padel_table.csv")
-            df_padel.drop_duplicates(subset=[dyes_col], inplace=True)
-            df_padel = df_padel[df_padel.columns[2:]].set_index(dyes_col)
-
-            X1 = np.array([df_padel.loc[x].to_list() for x in df_endpoint[dyes_col]])
+            X1 = np.array([df_padel.loc[x].to_list() if x in df_padel.index else [np.nan]*2741 for x in df_endpoint[dyes_col]])
 
         elif dye_desc == "rdkit":
             desc_funcs = [x[1] for x in RDKitDescriptors.descList]
@@ -140,9 +143,12 @@ def main(datafile: str,
             df_endpoint["fps_dye"] = df_endpoint.ROMol_dye.apply(AllChem.GetHashedMorganFingerprint, **dye_fp_args)
             X1 = np.array([list(x) for x in df_endpoint.fps_dye])
 
+        elif dye_desc == "ncs":
+            X1 = ncs_descriptors(df_endpoint, dyes_col, 2048)
+
         else:
             raise ValueError(f"Cannot process dye_desc of {dye_desc}: must be in ['morgan', 'morgan_count', 'padel',"
-                             f" 'rdkit']")
+                             f" 'rdkit', 'ncs']")
 
         if verbose:
             print(f"done in {time.time() - t0} sec")
@@ -152,13 +158,13 @@ def main(datafile: str,
             print("Loading solvent descriptors...   ", end="")
             t0 = time.time()
 
-        if dye_desc == "rdkit":
+        if solvent_desc == "rdkit":
             desc_funcs = [x[1] for x in RDKitDescriptors.descList]
             X2 = np.array(df_endpoint["ROMol_solvent"].apply(
                 lambda x: [func(x) for func in desc_funcs] if x is not None else [np.nan for _ in range(
                     len(desc_funcs))]).to_list()).astype(float)
 
-        elif dye_desc == "morgan":
+        elif solvent_desc == "morgan":
             if dye_fp_args is None:
                 dye_fp_args = {"radius": 3, "nBits": 2048}
             else:
@@ -168,7 +174,7 @@ def main(datafile: str,
                                                                  **solvent_fp_args)
             X2 = np.array([list(x) for x in df_endpoint.fps_solvent])
 
-        elif dye_desc == "morgan_count":
+        elif solvent_desc == "morgan_count":
             if dye_fp_args is None:
                 dye_fp_args = {"radius": 3, "nBits": 2048}
             else:
@@ -177,9 +183,12 @@ def main(datafile: str,
             df_endpoint["fps_solvent"] = df_endpoint.ROMol_solvent.apply(AllChem.GetHashedMorganFingerprint, **solvent_fp_args)
             X2 = np.array([list(x) for x in df_endpoint.fps_solvent])
 
+        elif solvent_desc == "ncs":
+            X2 = ncs_descriptors(df_endpoint, solvent_col, 256)
+
         else:
             raise ValueError(
-                f"Cannot process solvent_desc of {solvent_desc}: must be in ['morgan', 'morgan_count', 'rdkit']")
+                f"Cannot process solvent_desc of {solvent_desc}: must be in ['morgan', 'morgan_count', 'rdkit', 'ncs']")
 
         if verbose:
             print(f"done in {time.time() - t0} sec")
@@ -197,6 +206,9 @@ def main(datafile: str,
 
             X = np.concatenate((X1, X2), axis=1)
             y = df_endpoint[[endpoint]].to_numpy().reshape(-1, 1)
+
+            if "bins_list" in dir(model):
+                model.make_bins(y, 11, 4)
 
             data = np.concatenate((y, df_endpoint[dyes_col].to_numpy().reshape(-1, 1),
                                    df_endpoint[solvent_col].to_numpy().reshape(-1, 1), X), axis=1)
@@ -223,7 +235,7 @@ def main(datafile: str,
                 print("doing cross validation")
                 t0 = time.time()
             for fold in range(num_folds):
-                print(f"generating crossval splits for fold {fold}...")
+                print(f"generating crossval splits for fold {fold}...   ", end="")
                 t1 = time.time()
                 if mixture:
                     train, test, dye_out, solvent_out = generate_mixture_fold(data, data[:, 1], data[:, 2], use_scafold_split=validation_method == "mixture_scaffold", scaffold_1=True, scaffold_2=False)
@@ -260,7 +272,7 @@ def main(datafile: str,
                                      f"['random', 'mixture', 'scaffold', 'mixture_scaffold']")
 
                 if verbose:
-                    print(f"done in {t1 - time.time()}")
+                    print(f"done in {time.time() - t1}")
 
                 if verbose:
                     print(f"fitting model on fold {fold}...   ", end="")
@@ -271,7 +283,7 @@ def main(datafile: str,
                 model_c.fit(train_X, train_y)
 
                 if verbose:
-                    print(f"done in {t1 - time.time()}")
+                    print(f"done in {time.time() - t1}")
 
                 # eval the fold
                 if verbose:
@@ -327,7 +339,7 @@ def main(datafile: str,
                     folds_true_solvout.append(deepcopy(solvent_out_y))
 
                 if verbose:
-                    print(f"done in {t1 - time.time()}")
+                    print(f"done in {time.time() - t1}\n")
 
             # get average metrics
             mean_metrics = np.array(fold_results).mean(axis=0)
@@ -429,8 +441,8 @@ def main(datafile: str,
                     }
                 }
 
-            print(f"completed {name}\n")
-        results[endpoint] = deepcopy(results)
+            print(f"completed cross-validation of model {name} in {time.time() - t0} sec\n")
+        results[endpoint] = deepcopy(endpoint_results)
 
     if save_filename is not None:
         import pickle
@@ -441,67 +453,71 @@ def main(datafile: str,
 
 
 if __name__ == "__main__":
-    import argparse
+    # import argparse
+    #
+    # parser = argparse.ArgumentParser("MultiStage reject option modeling for optical properties")
+    #
+    # parser.add_argument("--inpath", type=str, required=True,
+    #                     help="file loc of data containing smiles and solvent endpoints")
+    #
+    # parser.add_argument("--models", type=str, nargs='+', default=["RidgeMultiStageEnsemble"],
+    #                     help="names of models to use. Can be 'RidgeMultiStageEnsemble', 'GBTMultiStageEnsemble', 'GBT', 'RF' or 'Ridge'")
+    #
+    # parser.add_argument("--model_arg_file", type=str, default=None,
+    #                     help="file loc for json file containing model parameters (see readme for info)")
+    #
+    # parser.add_argument("--dyes_col", type=str, default="SMILES",
+    #                     help="name of column holding dye SMILES")
+    #
+    # parser.add_argument("--solvent_col", type=str, default="Solvent",
+    #                     help="name of column holding solvent SMILES")
+    #
+    # parser.add_argument("--endpoints", type=str, nargs='+', default=["all"],
+    #                     help="names of endpoint columns to use")
+    #
+    # parser.add_argument("--validation_method", type=str, default="mixture_scaffold",
+    #                     help="name of validation approach to use: ['mixture', 'mixture_scaffold', 'random', 'scaffold']")
+    #
+    # parser.add_argument("--n_folds", type=int, default=5,
+    #                     help="number of validation folds")
+    #
+    # parser.add_argument("--min_solvent_count", type=int, default=1,
+    #                     help="minimum number of times a solvent must be present to keep in dataset")
+    #
+    # parser.add_argument("--dye_desc", type=str, default="morgan",
+    #                     help="type of dye descriptor to be used must be in ['morgan', 'morgan_count', 'padel', 'rdkit']")
+    #
+    # parser.add_argument("--solvent_desc", type=str, default="morgan",
+    #                     help="type of dye descriptor to be used must be in ['morgan', 'morgan_count', 'rdkit']")
+    #
+    # parser.add_argument("--dye_fp_args", type=str, nargs="+", default=["nBits:2048", 'radius:3'],
+    #                     help="arguments for morgan fingerprint generation for dyes ei '--dye_fp_args nBits:2048 radius:3' sets nBits to 2048 and radius to 3")
+    #
+    # parser.add_argument("--solvent_fp_args", type=str, nargs="+", default=["nBits:256", 'radius:3'],
+    #                     help="arguments for morgan fingerprint generation for solvents ei '--dye_fp_args nBits:2048 radius:3' sets nBits to 2048 and radius to 3")
+    #
+    # parser.add_argument("--model_arg_file", type=str, default=None,
+    #                     help="file loc for json file containing model parameters (see readme for info)")
+    #
+    # parser.add_argument("--padel_dye_lookup", type=str, default=None,
+    #                     help="file loc for csv containing padel descriptors for dye smiles")
+    #
+    # parser.add_argument("--save_filename", type=str, default=None,
+    #                     help="file loc to save results. Defaults to not saving when unset")
+    #
+    # parser.add_argument("--drop_smiles", type=str, nargs="+", default=None,
+    #                     help="dye smiles that you want you want to remove from the dataset")
+    #
+    # parser.add_argument("--drop_duplicates", action='store_true',
+    #                     help="drop dye-solvent duplicates")
+    #
+    # parser.add_argument("--verbose", action='store_true',
+    #                     help="drop dye-solvent duplicates")
+    #
+    # args = parser.parse_args()
 
-    parser = argparse.ArgumentParser("MultiStage reject option modeling for optical properties")
+    res = main("C:\\Users\\welln\\OneDrive\\TropshaLab\\Projects\\MultiStageModelingColor/data/d4c_data.csv", GlobalLocalEnsemble(RandomForestClassifier(n_jobs=-1), Ridge(), num_ensemble=4, num_cutoffs=11),
+               endpoints="all", validation_method="scaffold", dye_desc="padel", solvent_desc="ncs", save_filename="ncs_run.pkl", padel_dye_lookup="C:\\Users\\welln\\OneDrive\\TropshaLab\\Projects\\MultiStageModelingColor/data/dye_padel_table.csv")
 
-    parser.add_argument("--inpath", type=str, required=True,
-                        help="file loc of data containing smiles and solvent endpoints")
-
-    parser.add_argument("--models", type=str, nargs='+', default=["RidgeMultiStageEnsemble"],
-                        help="names of models to use. Can be 'RidgeMultiStageEnsemble', 'GBTMultiStageEnsemble', 'GBT', 'RF' or 'Ridge'")
-
-    parser.add_argument("--model_arg_file", type=str, default=None,
-                        help="file loc for json file containing model parameters (see readme for info)")
-
-    parser.add_argument("--dyes_col", type=str, default="SMILES",
-                        help="name of column holding dye SMILES")
-
-    parser.add_argument("--solvent_col", type=str, default="Solvent",
-                        help="name of column holding solvent SMILES")
-
-    parser.add_argument("--endpoints", type=str, nargs='+', default=["all"],
-                        help="names of endpoint columns to use")
-
-    parser.add_argument("--validation_method", type=str, default="mixture_scaffold",
-                        help="name of validation approach to use: ['mixture', 'mixture_scaffold', 'random', 'scaffold']")
-
-    parser.add_argument("--n_folds", type=int, default=5,
-                        help="number of validation folds")
-
-    parser.add_argument("--min_solvent_count", type=int, default=1,
-                        help="minimum number of times a solvent must be present to keep in dataset")
-
-    parser.add_argument("--dye_desc", type=str, default="morgan",
-                        help="type of dye descriptor to be used must be in ['morgan', 'morgan_count', 'padel', 'rdkit']")
-
-    parser.add_argument("--solvent_desc", type=str, default="morgan",
-                        help="type of dye descriptor to be used must be in ['morgan', 'morgan_count', 'rdkit']")
-
-    parser.add_argument("--dye_fp_args", type=str, nargs="+", default=["nBits:2048", 'radius:3'],
-                        help="arguments for morgan fingerprint generation for dyes ei '--dye_fp_args nBits:2048 radius:3' sets nBits to 2048 and radius to 3")
-
-    parser.add_argument("--solvent_fp_args", type=str, nargs="+", default=["nBits:256", 'radius:3'],
-                        help="arguments for morgan fingerprint generation for solvents ei '--dye_fp_args nBits:2048 radius:3' sets nBits to 2048 and radius to 3")
-
-    parser.add_argument("--model_arg_file", type=str, default=None,
-                        help="file loc for json file containing model parameters (see readme for info)")
-
-    parser.add_argument("--padel_dye_lookup", type=str, default=None,
-                        help="file loc for csv containing padel descriptors for dye smiles")
-
-    parser.add_argument("--save_filename", type=str, default=None,
-                        help="file loc to save results. Defaults to not saving when unset")
-
-    parser.add_argument("--drop_smiles", type=str, nargs="+", default=None,
-                        help="dye smiles that you want you want to remove from the dataset")
-
-    parser.add_argument("--drop_duplicates", action='store_true',
-                        help="drop dye-solvent duplicates")
-
-    parser.add_argument("--verbose", action='store_true',
-                        help="drop dye-solvent duplicates")
-
-    args = parser.parse_args()
 
     # TODO process fp settings and model setting dicts to make the models to pass to the main
