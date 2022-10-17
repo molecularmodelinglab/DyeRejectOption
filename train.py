@@ -15,9 +15,17 @@ from MultiStageModel.GlobalGlobalEnsemble import GlobalGlobalEnsemble
 from MultiStageModel.GlobalLocalEnsemble import GlobalLocalEnsemble
 from utils import make_equal_sized_bins, ncs_descriptors
 
-ALL_ENDPOINTS = ['Absorption max (nm)', 'Emission max (nm)', 'Lifetime (ns)', 'Quantum yield',
-                 'log(e/mol-1 dm3 cm-1)', 'abs FWHM (cm-1)', 'emi FWHM (cm-1)', 'abs FWHM (nm)', 'emi FWHM (nm)']
+ALL_ENDPOINTS = ['Absorption max (nm)', 'Emission max (nm)', 'Quantum yield',
+                 'log(e/mol-1 dm3 cm-1)', 'abs FWHM (nm)', 'emi FWHM (nm)']
 
+c_dict = {
+    'Absorption max (nm)': "max_abs",
+    'Emission max (nm)': "max_emi",
+    'Quantum yield': "log_qy",
+    'log(e/mol-1 dm3 cm-1)': "log_ec",
+    'abs FWHM (nm)': "fwhm_abs",
+    'emi FWHM (nm)': "fwhm_emi"
+}
 
 # TODO add in support for custom metrics
 
@@ -67,9 +75,6 @@ def main(datafile: str,
         for ds in drop_smiles:
             df = df[~(df[dyes_col] == ds)].copy()  # remove protons they are bad
 
-    if drop_duplicates:
-        df.drop_duplicates([dyes_col, solvent_col], keep=False, inplace=True)  # drop duplicates (drop all conflicts)
-
     # find the good solvents and trim to datapoints with those
     picked_solvents = [key for key, val in Counter(df[solvent_col]).items() if val >= min_solv_count]
     df = df[np.isin(df[solvent_col].to_numpy(), picked_solvents)]
@@ -99,6 +104,9 @@ def main(datafile: str,
             print(f"Starting endpoint {endpoint}")
         endpoint_results = {}
         df_endpoint = deepcopy(df[~np.isnan(df[endpoint])])
+
+        if drop_duplicates:
+            df_endpoint.drop_duplicates([dyes_col, solvent_col], keep=False, inplace=True)  # drop duplicates (drop all conflicts)
 
         # log scale quantum yield
         if endpoint == "Quantum yield":
@@ -166,20 +174,20 @@ def main(datafile: str,
                     len(desc_funcs))]).to_list()).astype(float)
 
         elif solvent_desc == "morgan":
-            if dye_fp_args is None:
-                dye_fp_args = {"radius": 3, "nBits": 2048}
+            if solvent_fp_args is None:
+                solvent_fp_args = {"radius": 3, "nBits": 256}
             else:
-                if "radius" not in dye_fp_args.keys():
+                if "radius" not in solvent_fp_args.keys():
                     raise ValueError(f"Morgan fingerprint requires a radius argument, found args {solvent_fp_args}")
             df_endpoint["fps_solvent"] = df_endpoint.ROMol_solvent.apply(AllChem.GetMorganFingerprintAsBitVect,
                                                                          **solvent_fp_args)
             X2 = np.array([list(x) for x in df_endpoint.fps_solvent])
 
         elif solvent_desc == "morgan_count":
-            if dye_fp_args is None:
-                dye_fp_args = {"radius": 3, "nBits": 2048}
+            if solvent_fp_args is None:
+                solvent_fp_args = {"radius": 3, "nBits": 256}
             else:
-                if "radius" not in dye_fp_args.keys():
+                if "radius" not in solvent_fp_args.keys():
                     raise ValueError(f"Morgan fingerprint requires a radius argument, found args {solvent_fp_args}")
             df_endpoint["fps_solvent"] = df_endpoint.ROMol_solvent.apply(AllChem.GetHashedMorganFingerprint,
                                                                          **solvent_fp_args)
@@ -279,7 +287,7 @@ def main(datafile: str,
                     model_c.fit(train_X, train_y)
 
                     import pickle
-                    with open(save_model, "rb") as f:
+                    with open(f"{save_model}_{c_dict[endpoint]}.pkl", "wb") as f:
                         pickle.dump(model_c, f)
                     break
                 else:
@@ -356,7 +364,7 @@ def main(datafile: str,
                 if verbose:
                     print(f"done in {time.time() - t1}\n")
 
-            if validation_method != 'None':
+            if validation_method != 'none':
                 # get average metrics
                 mean_metrics = np.array(fold_results).mean(axis=0)
                 std_metrics = np.array(fold_results).std(axis=0)
@@ -532,7 +540,7 @@ if __name__ == "__main__":
     #
     # args = parser.parse_args()
 
-    res = main("C:\\Users\\welln\\OneDrive\\TropshaLab\\Projects\\MultiStageModelingColor/data/d4c_data.csv",
+    res = main("/home/james/Projects/MultiStageModelingColor/data/d4c_allS_no_reicharts_train.csv",
                GlobalGlobalEnsemble(RandomForestClassifier(n_jobs=-1), GradientBoostingRegressor(learning_rate=0.05,
                                                                                                  max_depth=31,
                                                                                                  max_features=100,
@@ -540,7 +548,7 @@ if __name__ == "__main__":
                                                                                                  n_estimators=1000,
                                                                                                  random_state=0),
                                     num_ensemble=4, num_cutoffs=11),
-               endpoints="all", validation_method="scaffold", dye_desc="padel", solvent_desc="morgan_count", save_model="s22_all_gbt.pkl",
-               padel_dye_lookup="C:\\Users\\welln\\OneDrive\\TropshaLab\\Projects\\MultiStageModelingColor/data/dye_padel_table.csv")
+               endpoints="all", validation_method="none", dye_desc="padel", solvent_desc="morgan_count", save_model="sall_all_gbt",
+               padel_dye_lookup="/home/james/Projects/MultiStageModelingColor/data/dye_padel_table.csv")
 
     # TODO process fp settings and model setting dicts to make the models to pass to the main
