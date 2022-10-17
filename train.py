@@ -15,9 +15,9 @@ from MultiStageModel.GlobalGlobalEnsemble import GlobalGlobalEnsemble
 from MultiStageModel.GlobalLocalEnsemble import GlobalLocalEnsemble
 from utils import make_equal_sized_bins, ncs_descriptors
 
-
 ALL_ENDPOINTS = ['Absorption max (nm)', 'Emission max (nm)', 'Lifetime (ns)', 'Quantum yield',
                  'log(e/mol-1 dm3 cm-1)', 'abs FWHM (cm-1)', 'emi FWHM (cm-1)', 'abs FWHM (nm)', 'emi FWHM (nm)']
+
 
 # TODO add in support for custom metrics
 
@@ -38,8 +38,8 @@ def main(datafile: str,
          save_filename: str = None,
          drop_smiles=None,
          drop_duplicates=True,
-         verbose: int = 1):
-
+         verbose: int = 1,
+         save_model=None):
     if endpoints == "all":
         endpoints = ALL_ENDPOINTS
     else:
@@ -117,7 +117,8 @@ def main(datafile: str,
             t0 = time.time()
 
         if dye_desc == "padel":
-            X1 = np.array([df_padel.loc[x].to_list() if x in df_padel.index else [np.nan]*2741 for x in df_endpoint[dyes_col]])
+            X1 = np.array(
+                [df_padel.loc[x].to_list() if x in df_padel.index else [np.nan] * 2741 for x in df_endpoint[dyes_col]])
 
         elif dye_desc == "rdkit":
             desc_funcs = [x[1] for x in RDKitDescriptors.descList]
@@ -171,7 +172,7 @@ def main(datafile: str,
                 if "radius" not in dye_fp_args.keys():
                     raise ValueError(f"Morgan fingerprint requires a radius argument, found args {solvent_fp_args}")
             df_endpoint["fps_solvent"] = df_endpoint.ROMol_solvent.apply(AllChem.GetMorganFingerprintAsBitVect,
-                                                                 **solvent_fp_args)
+                                                                         **solvent_fp_args)
             X2 = np.array([list(x) for x in df_endpoint.fps_solvent])
 
         elif solvent_desc == "morgan_count":
@@ -180,7 +181,8 @@ def main(datafile: str,
             else:
                 if "radius" not in dye_fp_args.keys():
                     raise ValueError(f"Morgan fingerprint requires a radius argument, found args {solvent_fp_args}")
-            df_endpoint["fps_solvent"] = df_endpoint.ROMol_solvent.apply(AllChem.GetHashedMorganFingerprint, **solvent_fp_args)
+            df_endpoint["fps_solvent"] = df_endpoint.ROMol_solvent.apply(AllChem.GetHashedMorganFingerprint,
+                                                                         **solvent_fp_args)
             X2 = np.array([list(x) for x in df_endpoint.fps_solvent])
 
         elif solvent_desc == "ncs":
@@ -238,7 +240,9 @@ def main(datafile: str,
                 print(f"generating crossval splits for fold {fold}...   ", end="")
                 t1 = time.time()
                 if mixture:
-                    train, test, dye_out, solvent_out = generate_mixture_fold(data, data[:, 1], data[:, 2], use_scafold_split=validation_method == "mixture_scaffold", scaffold_1=True, scaffold_2=False)
+                    train, test, dye_out, solvent_out = generate_mixture_fold(data, data[:, 1], data[:, 2],
+                                                                              use_scafold_split=validation_method == "mixture_scaffold",
+                                                                              scaffold_1=True, scaffold_2=False)
 
                     train_X = train[:, 3:].astype(float)
                     train_y = train[:, 0].astype(float)
@@ -267,9 +271,20 @@ def main(datafile: str,
 
                     test_X = test[:, 3:].astype(float)
                     test_y = test[:, 0].astype(float)
+                elif validation_method == 'none':
+                    train_X = data[:, 3:].astype(float)
+                    train_y = data[:, 0].astype(float)
+
+                    model_c = deepcopy(model)
+                    model_c.fit(train_X, train_y)
+
+                    import pickle
+                    with open(save_model, "rb") as f:
+                        pickle.dump(model_c, f)
+                    break
                 else:
                     raise ValueError(f"validation method {validation_method} not recognized must be in "
-                                     f"['random', 'mixture', 'scaffold', 'mixture_scaffold']")
+                                     f"['random', 'mixture', 'scaffold', 'mixture_scaffold', 'none']")
 
                 if verbose:
                     print(f"done in {time.time() - t1}")
@@ -341,107 +356,108 @@ def main(datafile: str,
                 if verbose:
                     print(f"done in {time.time() - t1}\n")
 
-            # get average metrics
-            mean_metrics = np.array(fold_results).mean(axis=0)
-            std_metrics = np.array(fold_results).std(axis=0)
+            if validation_method != 'None':
+                # get average metrics
+                mean_metrics = np.array(fold_results).mean(axis=0)
+                std_metrics = np.array(fold_results).std(axis=0)
 
-            # save results
-            if mixture:
-                endpoint_results[name] = {
-                    "average_metrics": {
-                        "train": {
-                            "r2": mean_metrics[0],
-                            "mae": mean_metrics[1],
-                            "rmsd": mean_metrics[2]
+                # save results
+                if mixture:
+                    endpoint_results[name] = {
+                        "average_metrics": {
+                            "train": {
+                                "r2": mean_metrics[0],
+                                "mae": mean_metrics[1],
+                                "rmsd": mean_metrics[2]
+                            },
+                            "everything_out": {
+                                "r2": mean_metrics[3],
+                                "mae": mean_metrics[4],
+                                "rmsd": mean_metrics[5]
+                            },
+                            "dye_out": {
+                                "r2": mean_metrics[6],
+                                "mae": mean_metrics[7],
+                                "rmsd": mean_metrics[8]
+                            },
+                            "solvent_out": {
+                                "r2": mean_metrics[9],
+                                "mae": mean_metrics[10],
+                                "rmsd": mean_metrics[11]
+                            }
                         },
-                        "everything_out": {
-                            "r2": mean_metrics[3],
-                            "mae": mean_metrics[4],
-                            "rmsd": mean_metrics[5]
+                        "std_metrics": {
+                            "train": {
+                                "r2": std_metrics[0],
+                                "mae": std_metrics[1],
+                                "rmsd": std_metrics[2]
+                            },
+                            "everything_out": {
+                                "r2": std_metrics[3],
+                                "mae": std_metrics[4],
+                                "rmsd": std_metrics[5]
+                            },
+                            "dye_out": {
+                                "r2": std_metrics[6],
+                                "mae": std_metrics[7],
+                                "rmsd": std_metrics[8]
+                            },
+                            "solvent_out": {
+                                "r2": std_metrics[9],
+                                "mae": std_metrics[10],
+                                "rmsd": std_metrics[11]
+                            }
                         },
-                        "dye_out": {
-                            "r2": mean_metrics[6],
-                            "mae": mean_metrics[7],
-                            "rmsd": mean_metrics[8]
+                        "results_everything_out": {
+                            "preds": fold_preds,
+                            "pred_prob": fold_pred_proba,
+                            "y_true": folds_true
                         },
-                        "solvent_out": {
-                            "r2": mean_metrics[9],
-                            "mae": mean_metrics[10],
-                            "rmsd": mean_metrics[11]
+                        "results_dye_out": {
+                            "preds": fold_preds_dyeout,
+                            "pred_prob": fold_pred_proba_dyeout,
+                            "y_true": folds_true_dyeout
+                        },
+                        "results_solvent_out": {
+                            "preds": fold_preds_solvout,
+                            "pred_prob": fold_pred_proba_solvout,
+                            "y_true": folds_true_solvout
                         }
-                    },
-                    "std_metrics": {
-                        "train": {
-                            "r2": std_metrics[0],
-                            "mae": std_metrics[1],
-                            "rmsd": std_metrics[2]
-                        },
-                        "everything_out": {
-                            "r2": std_metrics[3],
-                            "mae": std_metrics[4],
-                            "rmsd": std_metrics[5]
-                        },
-                        "dye_out": {
-                            "r2": std_metrics[6],
-                            "mae": std_metrics[7],
-                            "rmsd": std_metrics[8]
-                        },
-                        "solvent_out": {
-                            "r2": std_metrics[9],
-                            "mae": std_metrics[10],
-                            "rmsd": std_metrics[11]
-                        }
-                    },
-                    "results_everything_out": {
-                        "preds": fold_preds,
-                        "pred_prob": fold_pred_proba,
-                        "y_true": folds_true
-                    },
-                    "results_dye_out": {
-                        "preds": fold_preds_dyeout,
-                        "pred_prob": fold_pred_proba_dyeout,
-                        "y_true": folds_true_dyeout
-                    },
-                    "results_solvent_out": {
-                        "preds": fold_preds_solvout,
-                        "pred_prob": fold_pred_proba_solvout,
-                        "y_true": folds_true_solvout
                     }
-                }
-            else:
-                endpoint_results[name] = {
-                    "average_metrics": {
-                        "train": {
-                            "r2": mean_metrics[0],
-                            "mae": mean_metrics[1],
-                            "rmsd": mean_metrics[2]
+                else:
+                    endpoint_results[name] = {
+                        "average_metrics": {
+                            "train": {
+                                "r2": mean_metrics[0],
+                                "mae": mean_metrics[1],
+                                "rmsd": mean_metrics[2]
+                            },
+                            "test": {
+                                "r2": mean_metrics[3],
+                                "mae": mean_metrics[4],
+                                "rmsd": mean_metrics[5]
+                            }
                         },
-                        "test": {
-                            "r2": mean_metrics[3],
-                            "mae": mean_metrics[4],
-                            "rmsd": mean_metrics[5]
-                        }
-                    },
-                    "std_metrics": {
-                        "train": {
-                            "r2": std_metrics[0],
-                            "mae": std_metrics[1],
-                            "rmsd": std_metrics[2]
+                        "std_metrics": {
+                            "train": {
+                                "r2": std_metrics[0],
+                                "mae": std_metrics[1],
+                                "rmsd": std_metrics[2]
+                            },
+                            "test": {
+                                "r2": std_metrics[3],
+                                "mae": std_metrics[4],
+                                "rmsd": std_metrics[5]
+                            }
                         },
-                        "test": {
-                            "r2": std_metrics[3],
-                            "mae": std_metrics[4],
-                            "rmsd": std_metrics[5]
+                        "results_test": {
+                            "preds": fold_preds,
+                            "pred_prob": fold_pred_proba,
+                            "y_true": folds_true
                         }
-                    },
-                    "results_test": {
-                        "preds": fold_preds,
-                        "pred_prob": fold_pred_proba,
-                        "y_true": folds_true
                     }
-                }
 
-            print(f"completed cross-validation of model {name} in {time.time() - t0} sec\n")
+                print(f"completed cross-validation of model {name} in {time.time() - t0} sec\n")
         results[endpoint] = deepcopy(endpoint_results)
 
     if save_filename is not None:
@@ -516,8 +532,15 @@ if __name__ == "__main__":
     #
     # args = parser.parse_args()
 
-    res = main("C:\\Users\\welln\\OneDrive\\TropshaLab\\Projects\\MultiStageModelingColor/data/d4c_data.csv", GlobalLocalEnsemble(RandomForestClassifier(n_jobs=-1), Ridge(), num_ensemble=4, num_cutoffs=11),
-               endpoints="all", validation_method="scaffold", dye_desc="padel", solvent_desc="ncs", save_filename="ncs_run.pkl", padel_dye_lookup="C:\\Users\\welln\\OneDrive\\TropshaLab\\Projects\\MultiStageModelingColor/data/dye_padel_table.csv")
-
+    res = main("C:\\Users\\welln\\OneDrive\\TropshaLab\\Projects\\MultiStageModelingColor/data/d4c_data.csv",
+               GlobalGlobalEnsemble(RandomForestClassifier(n_jobs=-1), GradientBoostingRegressor(learning_rate=0.05,
+                                                                                                 max_depth=31,
+                                                                                                 max_features=100,
+                                                                                                 min_samples_leaf=20,
+                                                                                                 n_estimators=1000,
+                                                                                                 random_state=0),
+                                    num_ensemble=4, num_cutoffs=11),
+               endpoints="all", validation_method="scaffold", dye_desc="padel", solvent_desc="morgan_count", save_model="s22_all_gbt.pkl",
+               padel_dye_lookup="C:\\Users\\welln\\OneDrive\\TropshaLab\\Projects\\MultiStageModelingColor/data/dye_padel_table.csv")
 
     # TODO process fp settings and model setting dicts to make the models to pass to the main
