@@ -94,6 +94,7 @@ def main(datafile: str,
             continue
         else:
             print("dataset size:", len(df_endpoint))
+            print("num_uniq: ", len(set(df_endpoint["SMILES"])))
 
         # Process dye descriptors
         if verbose:
